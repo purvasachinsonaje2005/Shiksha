@@ -1,16 +1,16 @@
+import sys
 import joblib
 import requests
+import json
 import pandas as pd
 
-
-# Replace this AFTER deploying your backend
-API_URL = "https://your-backend-url/api/students/python-api?studentId="
-
+API_URL = "http://localhost:3000/api/students/python-api?studentId="
 
 # ---------------------------
 # Mapping function
 # ---------------------------
 def map_student_to_model_format(student, application, number_of_absences):
+    """Convert MongoDB student fields to ML dataset column names."""
 
     mapped = {
         "Age": student["age"],
@@ -39,16 +39,18 @@ def map_student_to_model_format(student, application, number_of_absences):
 
         "Number_of_Failures": student["numberOfFailures"],
 
+        # Grades
         "Final_Grade": student["finalGrade"],
         "Grade_1": student["grade1"],
         "Grade_2": student["grade2"],
 
+        # Parent Education
         "Father_Education": student["father"]["educationLevel"],
         "Mother_Education": student["mother"]["educationLevel"],
 
+        # Parent Occupation (optional if model used them)
         "Father_Job": student["father"]["occupation"],
         "Mother_Job": student["mother"]["occupation"],
-
         "Number_of_Absences": number_of_absences,
         "School_Support": application,
     }
@@ -57,39 +59,38 @@ def map_student_to_model_format(student, application, number_of_absences):
 
 
 # ---------------------------
-# Prediction function
+# Main function
 # ---------------------------
 def analyze_student(student_id):
+    response = requests.get(API_URL + student_id)
 
-    try:
-        response = requests.get(API_URL + student_id)
+    if response.status_code != 200:
+        print("Error: Student not found")
+        return
 
-        if response.status_code != 200:
-            return {"error": "Student not found"}
+    student = response.json()["student"] 
+    application = response.json()["schoolSupport"]
+    number_of_absences = response.json()["numberOfAbsences"]
 
-        data = response.json()
+    input_row = map_student_to_model_format(student, application, number_of_absences)
+    
+    df = pd.DataFrame([input_row])
+    df.to_csv("temp_student_data.csv", index=False)
 
-        student = data["student"]
-        application = data["schoolSupport"]
-        number_of_absences = data["numberOfAbsences"]
+    model = joblib.load("python/dropout_predictor_pipeline.pkl")
+    prediction = model.predict(df)[0]
+    prob = model.predict_proba(df)[0][1]
+    
+    print(json.dumps({
+        "dropout_prediction": int(prediction),
+        "dropout_probability": float(prob),
+        "student":input_row
+    }, indent=4))
 
-        input_row = map_student_to_model_format(
-            student, application, number_of_absences
-        )
 
-        df = pd.DataFrame([input_row])
-
-        # Load ML model
-        model = joblib.load("python/dropout_predictor_pipeline.pkl")
-
-        prediction = model.predict(df)[0]
-        prob = model.predict_proba(df)[0][1]
-
-        return {
-            "dropout_prediction": int(prediction),
-            "dropout_probability": float(prob),
-            "student": input_row
-        }
-
-    except Exception as e:
-        return {"error": str(e)}
+# ---------------------------
+# Entry point
+# ---------------------------
+if __name__ == "__main__":
+    student_id = sys.argv[1]
+    analyze_student(student_id) 
